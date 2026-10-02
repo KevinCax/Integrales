@@ -15,7 +15,7 @@ LOCAL = {
     "arcsin": sp.asin, "arccos": sp.acos, "arctan": sp.atan,
 }
 
-METODOS = ["Riemann izquierda", "Riemann derecha", "Punto medio", "Trapecio", "Simpson 1/3"]
+METODOS = ["Discos (izquierda)", "Discos (derecha)", "Discos (punto medio)", "Trapecio", "Simpson 1/3"]
 
 
 # ===================================================================== entrada
@@ -35,6 +35,22 @@ def parsear_limite(texto):
     if sym.has(sp.Float):
         sym = sp.nsimplify(sym, rational=True)
     return sym, float(sp.N(sym))
+
+
+def preparar_problema(f_expr, g_expr, k_sym, a, b):
+    """
+    Dadas dos curvas f y g y el eje y = k, decide cuál es la exterior (R) y cuál la
+    interior (r) según su distancia al eje, y arma el integrando A(x) = π([R-k]² - [r-k]²).
+    """
+    xs = np.linspace(a, b, 201)[1:-1]
+    ff = crear_f(f_expr - k_sym)(xs)
+    gg = crear_f(g_expr - k_sym)(xs)
+    f_afuera = np.nanmean(ff ** 2) >= np.nanmean(gg ** 2)
+    R, r = (f_expr, g_expr) if f_afuera else (g_expr, f_expr)
+    Rk, rk = R - k_sym, r - k_sym
+    h = sp.expand(Rk ** 2 - rk ** 2)           # integrando sin el factor π
+    return dict(R=R, r=r, Rk=Rk, rk=rk, h=h, integrando=sp.pi * h,
+                intercambio=not f_afuera, disco=bool(sp.simplify(rk) == 0))
 
 
 def crear_f(expr):
@@ -177,11 +193,11 @@ def nodos(nombre, a, b, n):
     if nombre == "Simpson 1/3" and n % 2:
         n += 1  # Simpson requiere n par
     h = (b - a) / n
-    if nombre == "Riemann izquierda":
+    if nombre == "Discos (izquierda)":
         idx = np.arange(0, n); xs = a + h * idx; coef = np.ones(n); factor = h
-    elif nombre == "Riemann derecha":
+    elif nombre == "Discos (derecha)":
         idx = np.arange(1, n + 1); xs = a + h * idx; coef = np.ones(n); factor = h
-    elif nombre == "Punto medio":
+    elif nombre == "Discos (punto medio)":
         idx = np.arange(0, n); xs = a + h * (idx + 0.5); coef = np.ones(n); factor = h
     elif nombre == "Trapecio":
         idx = np.arange(0, n + 1); xs = a + h * idx
@@ -200,19 +216,22 @@ def aproximar(f, a, b, n, nombre):
     return float(d["factor"] * np.sum(d["coef"] * f(d["xs"])))
 
 
-def calcular_metodo(f, a, b, n, nombre):
-    """Resultado + todos los datos del procedimiento (tabla de nodos, suma, factor)."""
+def calcular_metodo(g, a, b, n, nombre, columnas=None):
+    """
+    g(x) = A(x) = π([R-k]² - [r-k]²).  Devuelve resultado + todos los datos del procedimiento
+    (tabla de nodos, suma, factor). `columnas` = {"R(x)": función, "r(x)": función} (solo para la tabla).
+    """
     d = nodos(nombre, a, b, n)
-    ys = f(d["xs"])
+    ys = g(d["xs"])
     suma = float(np.sum(d["coef"] * ys))
     d.update(nombre=nombre, ys=ys, suma=suma, resultado=d["factor"] * suma)
-    d["tabla"] = pd.DataFrame({
-        "i": d["idx"],
-        "x": d["xs"],
-        "f(x)": ys,
-        "Coef.": d["coef"].astype(int),
-        "Coef · f(x)": d["coef"] * ys,
-    })
+    cols = {"i": d["idx"], "x": d["xs"]}
+    for nom, fun in (columnas or {}).items():
+        cols[nom] = np.abs(fun(d["xs"]))
+    cols["A(x)"] = ys
+    cols["Coef."] = d["coef"].astype(int)
+    cols["Coef · A(x)"] = d["coef"] * ys
+    d["tabla"] = pd.DataFrame(cols)
     return d
 
 
@@ -230,31 +249,79 @@ def latex_metodo(m, a_sym, b_sym):
     A, B = _sl(a_sym), _sl(b_sym)
     delta = rf"\Delta x = \frac{{b-a}}{{n}} = \frac{{{B}-{A}}}{{{n}}} = {fmt(h)}"
 
+    area = r"A(x) = \pi\left([R(x)]^2 - [r(x)]^2\right)"
     formulas = {
-        "Riemann izquierda": r"S = \Delta x \sum_{i=0}^{n-1} f(x_i), \qquad x_i = a + i\,\Delta x",
-        "Riemann derecha": r"S = \Delta x \sum_{i=1}^{n} f(x_i), \qquad x_i = a + i\,\Delta x",
-        "Punto medio": r"S = \Delta x \sum_{i=0}^{n-1} f(\bar{x}_i), \qquad \bar{x}_i = a + \left(i+\tfrac{1}{2}\right)\Delta x",
-        "Trapecio": r"S = \frac{\Delta x}{2}\left[ f(x_0) + 2\sum_{i=1}^{n-1} f(x_i) + f(x_n) \right]",
-        "Simpson 1/3": r"S = \frac{\Delta x}{3}\left[ f(x_0) + 4\sum_{i\ \mathrm{impar}} f(x_i) + 2\sum_{i\ \mathrm{par}} f(x_i) + f(x_n) \right]",
+        "Discos (izquierda)": r"V \approx \Delta x \sum_{i=0}^{n-1} A(x_i), \qquad x_i = a + i\,\Delta x",
+        "Discos (derecha)": r"V \approx \Delta x \sum_{i=1}^{n} A(x_i), \qquad x_i = a + i\,\Delta x",
+        "Discos (punto medio)": r"V \approx \Delta x \sum_{i=0}^{n-1} A(\bar{x}_i), \qquad \bar{x}_i = a + \left(i+\tfrac{1}{2}\right)\Delta x",
+        "Trapecio": r"V \approx \frac{\Delta x}{2}\left[ A(x_0) + 2\sum_{i=1}^{n-1} A(x_i) + A(x_n) \right]",
+        "Simpson 1/3": r"V \approx \frac{\Delta x}{3}\left[ A(x_0) + 4\sum_{i\ \mathrm{impar}} A(x_i) + 2\sum_{i\ \mathrm{par}} A(x_i) + A(x_n) \right]",
     }
     fac_txt = {"Trapecio": rf"\frac{{{fmt(h)}}}{{2}}",
                "Simpson 1/3": rf"\frac{{{fmt(h)}}}{{3}}"}.get(nombre, fmt(h))
-    sust = rf"S = {fac_txt}\left[ {_terminos(m['coef'], m['ys'])} \right]"
-    suma = rf"\Sigma = \sum \text{{coef}}_i \, f(x_i) = {fmt(m['suma'])}"
-    res = rf"S = {fmt(m['factor'])} \cdot {fmt(m['suma'])} = \mathbf{{{fmt(m['resultado'])}}}"
-    return dict(delta=delta, formula=formulas[nombre], sustitucion=sust, suma=suma, resultado=res)
+    sust = rf"V \approx {fac_txt}\left[ {_terminos(m['coef'], m['ys'])} \right]"
+    suma = rf"\Sigma = \sum \text{{coef}}_i \, A(x_i) = {fmt(m['suma'])}"
+    res = rf"V \approx {fmt(m['factor'])} \cdot {fmt(m['suma'])} = \mathbf{{{fmt(m['resultado'])}}}\ \text{{u}}^3"
+    return dict(area=area, delta=delta, formula=formulas[nombre], sustitucion=sust, suma=suma, resultado=res)
 
 
-def latex_exacto(expr, ex, a_sym, b_sym):
-    """Líneas LaTeX de la solución exacta por el Teorema Fundamental del Cálculo."""
+# ============================================ solución exacta paso a paso (como a mano)
+def _sust(F, p):
+    """F evaluada en p SIN simplificar (para mostrar '4^3/3 + 1/4' y luego el valor)."""
+    s = sp.latex(p)
+    if not (p.is_Integer and p >= 0):
+        s = rf"\left({s}\right)"
+    return F.subs(x, sp.Symbol(s))
+
+
+def pasos_solucion(prob, k_sym, a_sym, b_sym):
+    """
+    Resuelve V = π ∫ (R² - r²) dx como se haría a mano. Devuelve un dict con las líneas LaTeX
+    o None si SymPy no encuentra una antiderivada elemental.
+    """
+    h = prob["h"]
+    try:
+        partes = [(t, sp.integrate(t, x)) for t in sp.Add.make_args(h)]
+        if any(F.has(sp.Integral) for _, F in partes):
+            return None
+        F = sp.Add(*[F for _, F in partes])
+        Fb = sp.simplify(_evaluar_F(F, b_sym, "-"))
+        Fa = sp.simplify(_evaluar_F(F, a_sym, "+"))
+        dif = sp.simplify(Fb - Fa)
+        V = sp.simplify(sp.pi * dif)
+        valor = complex(sp.N(V))
+        if abs(valor.imag) > 1e-12 or not np.isfinite(valor.real):
+            return None
+    except Exception:
+        return None
+
     A, B = _sl(a_sym), _sl(b_sym)
-    Fb = float(sp.N(ex["Fb"])) if ex["Fb"].is_real else complex(sp.N(ex["Fb"])).real
-    Fa = float(sp.N(ex["Fa"])) if ex["Fa"].is_real else complex(sp.N(ex["Fa"])).real
+    la, lb = sp.latex(a_sym), sp.latex(b_sym)
+    Rk, rk = prob["Rk"], prob["rk"]
+    if prob["disco"]:
+        plantea = rf"V = \pi \int_{{{la}}}^{{{lb}}} \left[{sp.latex(Rk)}\right]^2 dx"
+    else:
+        plantea = (rf"V = \pi \int_{{{la}}}^{{{lb}}} \left( \left[{sp.latex(Rk)}\right]^2 "
+                   rf"- \left[{sp.latex(rk)}\right]^2 \right) dx")
+    general = (r"V = \pi \int_a^b [R(x)]^2\,dx" if prob["disco"]
+               else r"V = \pi \int_a^b \left( [R(x)]^2 - [r(x)]^2 \right) dx")
     return dict(
-        antiderivada=rf"F(x) = \int {sp.latex(expr)}\,dx = {sp.latex(ex['anti'])} + C",
-        tfc=r"\int_a^b f(x)\,dx = F(b) - F(a)",
-        Fb=rf"F({B}) = {sp.latex(ex['Fb'])} \approx {fmt(Fb)}",
-        Fa=rf"F({A}) = {sp.latex(ex['Fa'])} \approx {fmt(Fa)}",
-        resultado=rf"\int_{{{sp.latex(a_sym)}}}^{{{sp.latex(b_sym)}}} f(x)\,dx = F({B}) - F({A}) "
-                  rf"= {sp.latex(ex['exacto_sym'])} \approx \mathbf{{{fmt(ex['exacto'])}}}",
+        general=general,
+        plantea=plantea,
+        simplificada=rf"V = \pi \int_{{{la}}}^{{{lb}}} \left({sp.latex(h)}\right) dx",
+        terminos=[(sp.latex(t), sp.latex(Fi)) for t, Fi in partes],
+        corchete=rf"V = \pi \left[ {sp.latex(F)} \right]_{{{la}}}^{{{lb}}}",
+        Fb_sust=rf"F({B}) = {sp.latex(_sust(F, b_sym))}",
+        Fb_val=rf"F({B}) = {sp.latex(Fb)}",
+        Fa_sust=rf"F({A}) = {sp.latex(_sust(F, a_sym))}",
+        Fa_val=rf"F({A}) = {sp.latex(Fa)}",
+        resta=rf"V = \pi\left( {sp.latex(Fb)} - {_par_sym(Fa)} \right)",
+        resta_val=rf"V = \pi \left( {sp.latex(dif)} \right)",
+        final=rf"V = {sp.latex(V)}",
+        V_sym=V, V=float(valor.real),
     )
+
+
+def _par_sym(e):
+    s = sp.latex(e)
+    return rf"\left({s}\right)" if e.is_negative else s
