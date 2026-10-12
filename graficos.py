@@ -16,15 +16,17 @@ def _lim(v):
 
 
 # =============================================================== PLOTLY 2D
-def fig_region_2d(Rk, rk, a, b, k, m=None, nombres=("R(x)", "r(x)")):
+def fig_region_2d(Rk, rk, a, b, k, m=None, nombres=("R", "r"), vertical=False):
     """
     Región entre las dos curvas, eje de giro y reflejo (silueta del sólido).
     Rk, rk = radios con signo (curva - k). Si `m` es un método de discos, dibuja
     las secciones (arandelas vistas de lado) con n <= 100.
+    vertical=True: el eje de giro es la recta x = k y a, b son límites en y (se intercambian x e y).
     """
     X = np.linspace(a, b, 600)
     yR, yr = _lim(k + Rk(X)), _lim(k + rk(X))
     fig = go.Figure()
+    nombres = tuple(f"{n}({'y' if vertical else 'x'})" if "(" not in n else n for n in nombres)
     # región original
     fig.add_trace(go.Scatter(x=X, y=yr, mode="lines", line=dict(color=ROJO, width=2), name=nombres[1]))
     fig.add_trace(go.Scatter(x=X, y=yR, mode="lines", line=dict(color=AZUL, width=3), name=nombres[0],
@@ -45,14 +47,27 @@ def fig_region_2d(Rk, rk, a, b, k, m=None, nombres=("R(x)", "r(x)")):
                 continue
             for s in (1, -1):
                 y0, y1 = sorted([k + s * ri, k + s * ro])
-                fig.add_shape(type="rect", x0=a + i * h, x1=a + (i + 1) * h, y0=y0, y1=y1,
-                              line=dict(color=ROJO, width=1), fillcolor="rgba(255,159,67,0.45)")
-    fig.add_hline(y=k, line=dict(color=ROJO, dash="dash", width=1.5),
-                  annotation_text=f"eje de giro y = {fmt(k)}", annotation_position="top left")
-    fig.add_vline(x=a, line=dict(color="gray", dash="dash", width=1))
-    fig.add_vline(x=b, line=dict(color="gray", dash="dash", width=1))
-    fig.update_layout(height=430, margin=dict(l=10, r=10, t=30, b=10), hovermode="x unified",
+                caja = dict(x0=a + i * h, x1=a + (i + 1) * h, y0=y0, y1=y1)
+                if vertical:
+                    caja = dict(x0=y0, x1=y1, y0=caja["x0"], y1=caja["x1"])
+                fig.add_shape(type="rect", **caja, line=dict(color=ROJO, width=1),
+                              fillcolor="rgba(255,159,67,0.45)")
+    if vertical:
+        for tr in fig.data:                                     # intercambia x <-> y
+            tr.x, tr.y = tr.y, tr.x
+        fig.add_vline(x=k, line=dict(color=ROJO, dash="dash", width=1.5),
+                      annotation_text=f"eje de giro x = {fmt(k)}", annotation_position="top left")
+        fig.add_hline(y=a, line=dict(color="gray", dash="dash", width=1))
+        fig.add_hline(y=b, line=dict(color="gray", dash="dash", width=1))
+    else:
+        fig.add_hline(y=k, line=dict(color=ROJO, dash="dash", width=1.5),
+                      annotation_text=f"eje de giro y = {fmt(k)}", annotation_position="top left")
+        fig.add_vline(x=a, line=dict(color="gray", dash="dash", width=1))
+        fig.add_vline(x=b, line=dict(color="gray", dash="dash", width=1))
+    fig.update_layout(height=430, margin=dict(l=10, r=10, t=30, b=10),
+                      hovermode="closest" if vertical else "x unified",
                       xaxis_title="x", yaxis_title="y", legend=dict(orientation="h", y=1.1),
+                      yaxis_scaleanchor="x" if vertical else None,
                       title=dict(text="Región (2D)", x=0.02, font=dict(size=14)))
     return fig
 
@@ -78,7 +93,7 @@ def _tapa(x0, ri, ro, th, k, color, opacity):
                  np.vstack([th, th]), k, color, opacity)
 
 
-def fig_solido_3d(Rk, rk, a, b, k, corte=False, m=None, titulo="Sólido de revolución"):
+def fig_solido_3d(Rk, rk, a, b, k, corte=False, m=None, titulo="Sólido de revolución", vertical=False):
     """
     Sólido 3D interactivo (se puede girar, acercar y mover con el mouse).
     - corte=True: quita 1/4 del sólido para ver el interior (y la arandela).
@@ -128,6 +143,9 @@ def fig_solido_3d(Rk, rk, a, b, k, corte=False, m=None, titulo="Sólido de revol
                                    line=dict(color=ROJO, width=6), name="r(x)"))
     fig.add_trace(go.Scatter3d(x=[a, b], y=[k, k], z=[0, 0], mode="lines",
                                line=dict(color="black", width=4, dash="dash"), name="eje de giro"))
+    if vertical:                                                # eje de giro vertical: intercambia x <-> y
+        for tr in fig.data:
+            tr.x, tr.y = tr.y, tr.x
     fig.update_layout(
         height=500, margin=dict(l=0, r=0, t=35, b=0), showlegend=False,
         title=dict(text=titulo, x=0.02, font=dict(size=14)),
@@ -143,13 +161,13 @@ def _curva(f, a, b):
     return xs, np.where(np.isfinite(ys), ys, np.nan)
 
 
-def _ejes(ax, ys, extra=()):
+def _ejes(ax, ys, extra=(), var="x"):
     vals = np.concatenate([ys[np.isfinite(ys)], [0.0], np.asarray(extra, float)[np.isfinite(extra)]])
     lo, hi = vals.min(), vals.max()
     pad = 0.1 * (hi - lo if hi > lo else 1.0)
     ax.set_ylim(lo - pad, hi + pad)
     ax.axhline(0, color="black", lw=0.8)
-    ax.set_xlabel("x")
+    ax.set_xlabel(var)
     ax.grid(alpha=0.3)
 
 
@@ -174,12 +192,12 @@ def fig_area(g, a, b, exacto):
     return _cerrar(fig)
 
 
-def fig_metodo(m, g, a, b, exacto):
+def fig_metodo(m, g, a, b, exacto, var="x"):
     """Aproximación del área bajo A(x): rectángulos (discos), trapecios o parábolas."""
     nombre, n, h, xs, ys = m["nombre"], m["n"], m["h"], m["xs"], m["ys"]
     fig, ax = plt.subplots(figsize=(7, 4.2))
     cx, cy = _curva(g, a, b)
-    ax.plot(cx, cy, color=VERDE, lw=2, label="A(x)")
+    ax.plot(cx, cy, color=VERDE, lw=2, label=f"A({var})")
     dibujado = n <= 100
     kw = dict(alpha=0.4, color=NARANJA, edgecolor=ROJO, lw=0.8)
 
@@ -204,8 +222,8 @@ def fig_metodo(m, g, a, b, exacto):
     err = abs(m["resultado"] - exacto)
     extra = "" if dibujado else "  (n > 100: no se dibujan las figuras)"
     ax.set_title(f"{nombre} · n = {n} · V ≈ {fmt(m['resultado'])} · error = {fmt(err)}{extra}", fontsize=10)
-    _ejes(ax, cy, extra=ys if dibujado else ())
-    ax.set_ylabel("A(x)")
+    _ejes(ax, cy, extra=ys if dibujado else (), var=var)
+    ax.set_ylabel(f"A({var})")
     ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
     return _cerrar(fig)

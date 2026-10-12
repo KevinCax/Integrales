@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import pandas as pd
 import sympy as sp
@@ -19,9 +21,60 @@ METODOS = ["Discos (izquierda)", "Discos (derecha)", "Discos (punto medio)", "Tr
 
 
 # ===================================================================== entrada
+NOMBRES_OK = set(LOCAL) | {"sin", "cos", "tan", "cot", "sec", "csc", "exp", "log",
+                           "sinh", "cosh", "tanh", "asin", "acos", "atan"}
+FUNCIONES = NOMBRES_OK - {"x", "pi", "e", "E"}
+
+
+def _partir(palabra):
+    """'xsin' -> ['x', 'sin'];  'pix' -> ['pi', 'x']. None si no se puede."""
+    mejor = [None] * (len(palabra) + 1)
+    mejor[0] = []
+    for i in range(1, len(palabra) + 1):
+        for j in range(i):
+            tr = palabra[j:i]
+            if mejor[j] is not None and tr in NOMBRES_OK:
+                mejor[i] = mejor[j] + [tr]
+                break
+    return mejor[-1]
+
+
+def normalizar(texto):
+    """Limpia el texto y revisa que solo tenga funciones/constantes conocidas (evita código malicioso)."""
+    t = texto.strip().lower()
+    if not t:
+        raise ValueError("Escribe una función (por ejemplo: x^2).")
+    if len(t) > 200:
+        raise ValueError("La expresión es demasiado larga.")
+    for a, b in (("²", "^2"), ("³", "^3"), ("π", "pi"), ("√", "sqrt"), ("raíz", "sqrt"), ("raiz", "sqrt"),
+                 ("−", "-"), ("×", "*"), ("÷", "/"), ("·", "*"), ("[", "("), ("]", ")"), ("{", "("), ("}", ")")):
+        t = t.replace(a, b)
+    t = re.sub(r"(?<=\d),(?=\d)", ".", t)                     # 1,5 -> 1.5
+    if t.count("(") != t.count(")"):
+        raise ValueError("Los paréntesis no están balanceados: revisa que cada ( tenga su ).")
+    if not re.fullmatch(r"[a-z0-9_+\-*/^().\s]+", t):
+        malo = sorted(set(re.sub(r"[a-z0-9_+\-*/^().\s]", "", t)))
+        raise ValueError(f"Carácter no permitido: {' '.join(malo)}")
+
+    def arreglar(m):
+        palabra, resto = m.group(0), t[m.end():].lstrip()
+        trozos = _partir(palabra)
+        if trozos is None:
+            raise ValueError(f"No reconozco «{palabra}». Usa: x, pi, e, sin, cos, tan, exp, ln, sqrt, abs...")
+        for i, tr in enumerate(trozos):
+            if tr in FUNCIONES and (i < len(trozos) - 1 or not resto.startswith("(")):
+                raise ValueError(f"Escribe la función con paréntesis, por ejemplo {tr}(x).")
+        return "*".join(trozos)
+    return re.sub(r"[a-z_]+", arreglar, t)
+
+
 def parsear_funcion(texto):
-    """Convierte texto en expresión de SymPy (acepta ^, sen, ln, pi, 2x ...)."""
-    expr = parse_expr(texto.replace("^", "**"), local_dict=LOCAL, transformations=TRANSFORMS)
+    """Convierte texto en expresión de SymPy (acepta ^, sen, ln, pi, 2x, 1,5, e^x ...)."""
+    try:
+        expr = parse_expr(normalizar(texto), local_dict=LOCAL, transformations=TRANSFORMS)
+    except (SyntaxError, TypeError, sp.SympifyError, AttributeError, NameError) as err:
+        raise ValueError("No pude entender la expresión. Revisa los operadores y paréntesis "
+                         "(ejemplo: 2*x^2 + sin(x)).") from err
     if not expr.free_symbols <= {x}:
         raise ValueError("Solo se permite la variable x.")
     return expr
@@ -29,12 +82,59 @@ def parsear_funcion(texto):
 
 def parsear_limite(texto):
     """Devuelve (valor simbólico, valor float). Acepta 2, -1.5, pi/2, sqrt(2)..."""
-    sym = parse_expr(texto.strip(), local_dict=LOCAL, transformations=TRANSFORMS)
+    try:
+        sym = parse_expr(normalizar(texto), local_dict=LOCAL, transformations=TRANSFORMS)
+    except (SyntaxError, TypeError, sp.SympifyError, AttributeError, NameError) as err:
+        raise ValueError(f"No pude entender «{texto}». Escribe un número (2, -1.5, pi/2, sqrt(2)...).") from err
     if sym.free_symbols:
         raise ValueError("Los límites deben ser números (puedes usar pi, e, sqrt(2)...).")
     if sym.has(sp.Float):
         sym = sp.nsimplify(sym, rational=True)
     return sym, float(sp.N(sym))
+
+
+def invertir(expr, lo, hi):
+    """
+    Despeja x de y = f(x) para girar alrededor de un eje vertical (el método de discos integra en y).
+    Devuelve dict(expr=x(y) en la variable interna x, latex=x(y) en LaTeX con y, ramas=n).
+    Lanza ValueError si f no se puede invertir en [lo, hi].
+    """
+    yy = sp.Symbol("yy")
+    try:
+        sols = sp.solve(sp.Eq(yy, expr), x)
+    except Exception:
+        sols = []
+    f = sp.lambdify(x, expr, modules=["numpy"])
+    ys = np.linspace(lo, hi, 41)[1:-1]
+    buenas = []
+    for s in sols:
+        try:
+            h = sp.lambdify(yy, s, modules=["numpy"])
+            with np.errstate(all="ignore"):
+                z = np.asarray(h(ys.astype(complex)) * np.ones_like(ys, dtype=complex))
+                if np.max(np.abs(z.imag)) > 1e-9 or not np.all(np.isfinite(z)):
+                    continue
+                xr = z.real
+                if np.max(np.abs(f(xr) - ys)) > 1e-6 * (1 + np.max(np.abs(ys))):
+                    continue
+        except Exception:
+            continue
+        buenas.append((s, xr))
+    if not buenas:
+        raise ValueError("No pude despejar x en función de y para esa curva en ese intervalo de y "
+                         "(la función puede no ser invertible ahí). Prueba con otro intervalo o con "
+                         "una curva que sea creciente o decreciente.")
+    buenas.sort(key=lambda t: (float(np.mean(t[1])) < 0, float(np.mean(np.abs(t[1])))))   # rama positiva y la más cercana al origen
+    s = buenas[0][0]
+    return dict(expr=s.subs(yy, x), latex=sp.latex(s.subs(yy, sp.Symbol("y"))), ramas=len(buenas))
+
+
+def a_var(texto, v="x"):
+    """Cambia la variable x por v en un texto LaTeX (para mostrar y en vez de x en giros verticales)."""
+    if v == "x":
+        return texto
+    texto = re.sub(r"(?<=[\s,])dx(?![A-Za-z])", "d" + v, texto)
+    return re.sub(r"(?<![A-Za-z\\])x(?![A-Za-z])", v, texto)
 
 
 def preparar_problema(f_expr, g_expr, k_sym, a, b):
@@ -243,7 +343,7 @@ def _terminos(coef, ys, mostrar=4):
     return " + ".join(items)
 
 
-def latex_metodo(m, a_sym, b_sym):
+def latex_metodo(m, a_sym, b_sym, v="x"):
     """Devuelve las líneas LaTeX del procedimiento de un método numérico."""
     nombre, n, h = m["nombre"], m["n"], m["h"]
     A, B = _sl(a_sym), _sl(b_sym)
@@ -262,7 +362,8 @@ def latex_metodo(m, a_sym, b_sym):
     sust = rf"V \approx {fac_txt}\left[ {_terminos(m['coef'], m['ys'])} \right]"
     suma = rf"\Sigma = \sum \text{{coef}}_i \, A(x_i) = {fmt(m['suma'])}"
     res = rf"V \approx {fmt(m['factor'])} \cdot {fmt(m['suma'])} = \mathbf{{{fmt(m['resultado'])}}}\ \text{{u}}^3"
-    return dict(area=area, delta=delta, formula=formulas[nombre], sustitucion=sust, suma=suma, resultado=res)
+    L = dict(area=area, delta=delta, formula=formulas[nombre], sustitucion=sust, suma=suma, resultado=res)
+    return {k: a_var(t, v) for k, t in L.items()}
 
 
 # ============================================ solución exacta paso a paso (como a mano)
@@ -274,7 +375,7 @@ def _sust(F, p):
     return F.subs(x, sp.Symbol(s))
 
 
-def pasos_solucion(prob, k_sym, a_sym, b_sym):
+def pasos_solucion(prob, k_sym, a_sym, b_sym, v="x"):
     """
     Resuelve V = π ∫ (R² - r²) dx como se haría a mano. Devuelve un dict con las líneas LaTeX
     o None si SymPy no encuentra una antiderivada elemental.
@@ -305,7 +406,7 @@ def pasos_solucion(prob, k_sym, a_sym, b_sym):
                    rf"- \left[{sp.latex(rk)}\right]^2 \right) dx")
     general = (r"V = \pi \int_a^b [R(x)]^2\,dx" if prob["disco"]
                else r"V = \pi \int_a^b \left( [R(x)]^2 - [r(x)]^2 \right) dx")
-    return dict(
+    P = dict(
         general=general,
         plantea=plantea,
         simplificada=rf"V = \pi \int_{{{la}}}^{{{lb}}} \left({sp.latex(h)}\right) dx",
@@ -320,6 +421,9 @@ def pasos_solucion(prob, k_sym, a_sym, b_sym):
         final=rf"V = {sp.latex(V)}",
         V_sym=V, V=float(valor.real),
     )
+    cadenas = {k: a_var(t, v) for k, t in P.items() if isinstance(t, str)}
+    cadenas["terminos"] = [(a_var(t, v), a_var(Fi, v)) for t, Fi in P["terminos"]]
+    return {**P, **cadenas}
 
 
 def _par_sym(e):

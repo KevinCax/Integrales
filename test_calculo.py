@@ -1,4 +1,5 @@
 import numpy as np
+import sympy as sp
 from calculo import *
 
 
@@ -72,6 +73,50 @@ def test_entrada_invalida():
         except ValueError:
             continue
         raise AssertionError(t)
+
+
+def volumen_vertical(texto, lo, hi, k="0", g_txt=None):
+    """Giro alrededor de x = k: se despeja x = g(y) y se integra en y."""
+    f = invertir(parsear_funcion(texto), float(sp.sympify(lo)), float(sp.sympify(hi)))["expr"]
+    g = invertir(parsear_funcion(g_txt), float(sp.sympify(lo)), float(sp.sympify(hi)))["expr"] if g_txt else None
+    k_sym, _ = parsear_limite(k)
+    a_sym, a = parsear_limite(lo)
+    b_sym, b = parsear_limite(hi)
+    prob = preparar_problema(f, g if g is not None else k_sym, k_sym, a, b)
+    return analisis_exacto(prob["integrando"], crear_f(prob["integrando"]), a_sym, b_sym, a, b)["exacto"]
+
+
+def test_eje_vertical():
+    assert abs(volumen_vertical("x^2", "0", "4") - 8 * np.pi) < 1e-9            # paraboloide
+    assert abs(volumen_vertical("x^3", "0", "8") - 19.2 * np.pi) < 1e-9
+    assert abs(volumen_vertical("x^2", "0", "4", "-1") - 68 * np.pi / 3) < 1e-9  # eje x = -1
+    assert abs(volumen_vertical("sqrt(x)", "0", "2") - 32 * np.pi / 5) < 1e-9
+    assert abs(volumen_vertical("x^2", "0", "1", "0", "sqrt(x)") - 0.3 * np.pi) < 1e-9   # arandelas
+
+
+def test_inversion():
+    assert sp.simplify(invertir(parsear_funcion("x^2"), 0, 4)["expr"] - sp.sqrt(x)) == 0
+    assert sp.simplify(invertir(parsear_funcion("2x+1"), 0, 5)["expr"] - (x - 1) / 2) == 0
+    try:
+        invertir(parsear_funcion("x^2+x^4"), -1, 0.5)      # no es uno a uno en ese rango
+    except ValueError:
+        return
+    raise AssertionError("debía rechazar una función no invertible")
+
+
+def test_sintaxis_flexible():
+    for t, esperado in [("e^x", sp.exp(x)), ("sen(x)", sp.sin(x)), ("1,5x", 1.5 * x), ("x²", x ** 2),
+                        ("2xsin(x)", 2 * x * sp.sin(x)), ("√(x)", sp.sqrt(x)), ("raiz(4-x^2)", sp.sqrt(4 - x ** 2))]:
+        assert sp.simplify(parsear_funcion(t) - esperado) == 0, t
+
+
+def test_entrada_peligrosa():
+    for t in ['__import__("os").system("dir")', "x.__class__", "open('a')", "foo(x)", "sinx", "(x", "x+"]:
+        try:
+            parsear_funcion(t)
+        except ValueError:
+            continue
+        raise AssertionError(f"{t!r} debía rechazarse")
 
 
 if __name__ == "__main__":
