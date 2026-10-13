@@ -9,7 +9,7 @@ from sympy.parsing.sympy_parser import (
     implicit_multiplication_application, convert_xor,
 )
 
-x = sp.Symbol("x")
+x = sp.Symbol("x", real=True)
 TRANSFORMS = standard_transformations + (implicit_multiplication_application, convert_xor)
 LOCAL = {
     "x": x, "pi": sp.pi, "e": sp.E, "E": sp.E,
@@ -50,6 +50,12 @@ def normalizar(texto):
                  ("−", "-"), ("×", "*"), ("÷", "/"), ("·", "*"), ("[", "("), ("]", ")"), ("{", "("), ("}", ")")):
         t = t.replace(a, b)
     t = re.sub(r"(?<=\d),(?=\d)", ".", t)                     # 1,5 -> 1.5
+    if "|" in t:                                                # |cos(x)| -> abs(cos(x))
+        if t.count("|") % 2:
+            raise ValueError("Falta cerrar una barra | del valor absoluto.")
+        partes = t.split("|")
+        t = partes[0] + "".join(("abs(" if i % 2 == 0 else ")") + p for i, p in enumerate(partes[1:]))
+    t = re.sub(r"(?<![a-z])(sen|sin|cos|tan|tg|sec|csc|cot|exp|ln|log|sqrt|abs)\s*x(?![a-z])", r"\1(x)", t)   # tan x -> tan(x)
     if t.count("(") != t.count(")"):
         raise ValueError("Los paréntesis no están balanceados: revisa que cada ( tenga su ).")
     if not re.fullmatch(r"[a-z0-9_+\-*/^().\s]+", t):
@@ -127,6 +133,182 @@ def invertir(expr, lo, hi):
     buenas.sort(key=lambda t: (float(np.mean(t[1])) < 0, float(np.mean(np.abs(t[1])))))   # rama positiva y la más cercana al origen
     s = buenas[0][0]
     return dict(expr=s.subs(yy, x), latex=sp.latex(s.subs(yy, sp.Symbol("y"))), ramas=len(buenas))
+
+
+# ============================================== región limitada por varias curvas
+def _fl(e):
+    return float(sp.N(e))
+
+
+def _unicos(valores):
+    """Ordena y elimina repetidos (por valor numérico)."""
+    salida = []
+    for e in sorted(valores, key=_fl):
+        if not salida or abs(_fl(e) - _fl(salida[-1])) > 1e-9:
+            salida.append(e)
+    return salida
+
+
+def _cortes(f, g, dominio=None):
+    """Valores reales de x donde f(x) = g(x). Si hay infinitos (tan x = 0), se buscan dentro de `dominio`."""
+    sol = None
+    for dom in (sp.S.Reals, dominio):
+        if dom is None:
+            continue
+        try:
+            sol = sp.solveset(sp.Eq(f, g), x, domain=dom)
+        except Exception:
+            sol = None
+        if sol == sp.S.EmptySet or isinstance(sol, sp.FiniteSet):
+            break
+    if sol == sp.S.EmptySet:
+        return []
+    if not isinstance(sol, sp.FiniteSet):
+        raise ValueError(f"No pude hallar los puntos de corte entre y = {sp.latex(f)} y y = {sp.latex(g)}. "
+                         "Usa la entrada manual con función e intervalo.")
+    return [sp.simplify(r) for r in sol]
+
+
+def _elegir_limites(rectas, cortes, v):
+    """Decide [inicio, fin] a partir de las rectas límite dadas y de los puntos de corte entre curvas."""
+    rectas, cortes = _unicos(rectas), _unicos(cortes)
+    if len(rectas) >= 2:
+        return rectas[0], rectas[-1]
+    if len(rectas) == 1:
+        otros = [c for c in cortes if abs(_fl(c) - _fl(rectas[0])) > 1e-9]
+        if not otros:
+            raise ValueError(f"No encontré el otro límite en {v}: las curvas no encierran una región con esa recta. "
+                             f"Agrega otra recta ({v} = número).")
+        c = min(otros, key=lambda t: abs(_fl(t) - _fl(rectas[0])))
+        return tuple(sorted([rectas[0], c], key=_fl))
+    if len(cortes) == 2:
+        return cortes[0], cortes[1]
+    if len(cortes) < 2:
+        raise ValueError("Con esas fronteras no se encierra una región. "
+                         "Agrega rectas límite (x = número o y = número).")
+    return cortes[0], cortes[-1]                      # varias partes: de la primera a la última intersección
+
+
+_RE_EJE = re.compile(r"^eje(\s+de\s+giro)?\s*:?\s*([xy])\s*(?:=\s*(.+))?$")
+
+
+def _lineas(texto):
+    """Separa el enunciado en fronteras (por saltos de línea, ';' o comas que no son decimales)."""
+    t = texto.replace("≤", "<=").replace("≥", ">=").replace(";", "\n")
+    out = []
+    for linea in t.splitlines():
+        out += [p.strip() for p in re.split(r"(?<!\d),|,(?!\d)", linea) if p.strip()]
+    return out
+
+
+def extraer_eje(texto):
+    """Busca una línea como 'eje x', 'eje y', 'eje y = 2' o 'eje x = 1'. Devuelve (vertical, k_texto) o None."""
+    for linea in _lineas(texto):
+        m = _RE_EJE.match(linea.lower())
+        if m:
+            letra, valor = m.group(2), (m.group(3) or "0").strip()
+            return (letra == "y" and m.group(3) is None) or (letra == "x" and m.group(3) is not None), valor
+    return None
+
+
+def parsear_region(texto, vertical, k_sym):
+    """
+    Lee las fronteras de la región (una por línea, o separadas por ';' o ','):
+    y = f(x),  y = número,  x = número,  a <= x <= b,  x <= número.  (Las líneas 'eje ...' se ignoran aquí.)
+    Halla los puntos de corte y los límites de integración.
+    Devuelve dict(f, g, a_sym, a, b_sym, b, pasos, inversiones) con f, g ya listas para el cálculo
+    (con eje vertical se despeja x = g(y)).
+    """
+    curvas, verts, horiz = [], [], []
+    for linea in _lineas(texto):
+        if _RE_EJE.match(linea.lower()):
+            continue
+        if re.search(r"<|>", linea):                              # desigualdades: 0 <= x <= 2pi
+            partes = [t.strip().lower() for t in re.split(r"<=|>=|<|>", linea)]
+            letras = [t for t in partes if t in ("x", "y")]
+            if len(letras) != 1 or len(partes) not in (2, 3):
+                raise ValueError(f"No entiendo la desigualdad «{linea}». Usa por ejemplo 0 <= x <= 2pi.")
+            destino = verts if letras[0] == "x" else horiz
+            destino += [parsear_limite(t)[0] for t in partes if t not in ("x", "y")]
+            continue
+        if linea.count("=") != 1:
+            raise ValueError(f"Escribe cada frontera como y = f(x), y = número o x = número (revisa: «{linea}»).")
+        izq, der = (t.strip().lower() for t in linea.split("="))
+        if izq == "y":
+            expr = parsear_funcion(der)
+            if expr.free_symbols:
+                curvas.append(expr)
+            else:
+                horiz.append(parsear_limite(der)[0])
+        elif izq == "x":
+            verts.append(parsear_limite(der)[0])
+        else:
+            raise ValueError(f"Cada frontera debe empezar con «y =» o «x =» (revisa: «{linea}»).")
+
+    pasos, inversiones = [], []
+    if not vertical:
+        # curvas = y=f(x) y rectas y=c ; límites = rectas x=c
+        funcs = curvas + horiz
+        if not funcs:
+            raise ValueError("Escribe al menos una curva, por ejemplo y = x^2.")
+        if len(funcs) == 1:
+            funcs.append(k_sym)                       # la región llega hasta el eje de giro
+        if len(funcs) > 2:
+            raise ValueError("Hay más de dos curvas y = ... Si una de ellas es el eje de giro, escríbela como «eje y=2» "
+                             "(o usa la entrada manual con función e intervalo).")
+        cortes = []
+        dom = None
+        if len(_unicos(verts)) == 1:                 # una sola recta: se busca cerca de ella
+            c0 = _fl(verts[0])
+            dom = sp.Interval(c0 - 10, c0 + 10)
+        if len(_unicos(verts)) < 2:                  # faltan límites: se buscan en los cortes entre curvas
+            for i in range(len(funcs)):
+                for j in range(i + 1, len(funcs)):
+                    rs = _cortes(funcs[i], funcs[j], dom)
+                    cortes += rs
+                    eq = rf"{sp.latex(funcs[i])} = {sp.latex(funcs[j])}"
+                    if rs:
+                        pasos.append(eq + r" \;\Rightarrow\; x = " + r",\ ".join(sp.latex(r) for r in rs))
+                    else:
+                        pasos.append(eq + r" \;\Rightarrow\; \text{sin puntos de corte}")
+        for c in verts:
+            pasos.append(rf"x = {sp.latex(c)} \;\text{{(recta límite)}}")
+        a_sym, b_sym = _elegir_limites(verts, cortes, "x")
+        f, g = funcs[0], funcs[1]
+    else:
+        # curvas = y=f(x) (se despejan) y rectas x=c ; límites = rectas y=c
+        consts = list(verts)
+        if len(curvas) + len(consts) == 1:
+            consts.append(k_sym)                      # la región llega hasta el eje de giro
+        if not curvas or len(curvas) + len(consts) > 2:
+            raise ValueError("Para girar alrededor de un eje vertical escribe una o dos fronteras entre y = f(x) "
+                             "y x = número (más rectas y = número como límites).")
+        ys = []
+        if len(_unicos(horiz)) < 2:                  # faltan límites: se buscan en los cortes entre curvas
+            for i in range(len(curvas)):
+                for j in range(i + 1, len(curvas)):
+                    for r in _cortes(curvas[i], curvas[j]):
+                        yv = sp.simplify(curvas[i].subs(x, r))
+                        ys.append(yv)
+                        pasos.append(rf"{sp.latex(curvas[i])} = {sp.latex(curvas[j])} \;\Rightarrow\; x = {sp.latex(r)}"
+                                     rf" \;\Rightarrow\; y = {sp.latex(yv)}")
+            for f_ in curvas:
+                for c in consts:
+                    yv = sp.simplify(f_.subs(x, c))
+                    ys.append(yv)
+                    pasos.append(rf"x = {sp.latex(c)} \;\Rightarrow\; y = {sp.latex(f_)} = {sp.latex(yv)}")
+        for c in horiz:
+            pasos.append(rf"y = {sp.latex(c)} \;\text{{(recta límite)}}")
+        a_sym, b_sym = _elegir_limites(horiz, ys, "y")
+        listas = []
+        for f_ in curvas:
+            inv = invertir(f_, _fl(a_sym), _fl(b_sym))
+            inversiones.append((sp.latex(f_), inv))
+            listas.append(inv["expr"])
+        listas += consts
+        f, g = listas[0], listas[1]
+    pasos.append(rf"{'y' if vertical else 'x'} \in \left[{sp.latex(a_sym)},\ {sp.latex(b_sym)}\right]")
+    return dict(f=f, g=g, a_sym=a_sym, a=_fl(a_sym), b_sym=b_sym, b=_fl(b_sym), pasos=pasos, inversiones=inversiones)
 
 
 def a_var(texto, v="x"):

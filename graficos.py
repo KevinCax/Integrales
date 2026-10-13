@@ -10,7 +10,6 @@ METODOS_DISCO = ("Discos (izquierda)", "Discos (derecha)", "Discos (punto medio)
 
 
 def _lim(v):
-    """Reemplaza valores no finitos por NaN (Plotly los deja como huecos)."""
     v = np.asarray(v, dtype=float)
     return np.where(np.isfinite(v), v, np.nan)
 

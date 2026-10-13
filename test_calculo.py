@@ -111,12 +111,76 @@ def test_sintaxis_flexible():
 
 
 def test_entrada_peligrosa():
-    for t in ['__import__("os").system("dir")', "x.__class__", "open('a')", "foo(x)", "sinx", "(x", "x+"]:
+    for t in ['__import__("os").system("dir")', "x.__class__", "open('a')", "foo(x)", "sin", "(x", "x+"]:
         try:
             parsear_funcion(t)
         except ValueError:
             continue
         raise AssertionError(f"{t!r} debía rechazarse")
+
+
+def volumen_region(texto, vertical=False, k="0"):
+    k_sym, _ = parsear_limite(k)
+    r = parsear_region(texto, vertical, k_sym)
+    prob = preparar_problema(r["f"], r["g"], k_sym, r["a"], r["b"])
+    ex = analisis_exacto(prob["integrando"], crear_f(prob["integrando"]), r["a_sym"], r["b_sym"], r["a"], r["b"])
+    return ex["exacto"], r
+
+
+def test_region_por_fronteras():
+    v, r = volumen_region("y=(x-2)^2; x=0; y=0")          # ejercicio del enunciado
+    assert (r["a_sym"], r["b_sym"]) == (0, 2) and abs(v - 32 * np.pi / 5) < 1e-9
+    assert abs(volumen_region("y=x; x=3; y=0")[0] - 9 * np.pi) < 1e-9
+    assert abs(volumen_region("y=x; y=x^2")[0] - 2 * np.pi / 15) < 1e-9              # límites = puntos de corte
+    assert abs(volumen_region("y=x; y=1/x; x=1; x=4")[0] - 81 * np.pi / 4) < 1e-9
+    assert abs(volumen_region("y=sin(x); y=0; x=0; x=pi")[0] - np.pi ** 2 / 2) < 1e-9
+    assert abs(volumen_region("y=x^2; x=0; x=1; y=0", k="2")[0] - 17 * np.pi / 15) < 1e-9
+    assert abs(volumen_region("y=x^2; x=0; y=4", vertical=True)[0] - 8 * np.pi) < 1e-9
+    assert abs(volumen_region("y=(x-2)^2; x=0; y=0", vertical=True)[0] - 8 * np.pi / 3) < 1e-9
+
+
+def test_region_invalida():
+    for t in ["y=x^2", "y=x^2; z=1", "y=x^2 = 4", "x=1"]:
+        try:
+            parsear_region(t, False, sp.Integer(0))
+        except ValueError:
+            continue
+        raise AssertionError(f"{t!r} debía rechazarse")
+
+
+def resolver_enunciado(texto):
+    """Como la app: toma el eje del enunciado, halla límites y calcula el volumen exacto."""
+    eje = extraer_eje(texto)
+    vertical, k_txt = eje if eje else (False, "0")
+    k_sym, _ = parsear_limite(k_txt)
+    r = parsear_region(texto, vertical, k_sym)
+    prob = preparar_problema(r["f"], r["g"], k_sym, r["a"], r["b"])
+    return analisis_exacto(prob["integrando"], crear_f(prob["integrando"]),
+                           r["a_sym"], r["b_sym"], r["a"], r["b"])["exacto"], r
+
+
+def test_enunciados_completos():
+    pi = np.pi
+    casos = [("y=x^3-x, y=0, eje x", 16 * pi / 105, (-1, 1)),                 # tres cortes: -1, 0, 1
+             ("y=e^(-x), x=1, y=1, eje y=2", pi * (4 / np.e - 0.5 - np.e ** -2 / 2), (0, 1)),
+             ("y=|cos(x)|, y=0, 0<=x<=2pi, eje x", pi ** 2, (0, 2 * pi)),
+             ("y=abs(cos x), y=0, 0 ≤ x ≤ 2π, eje x", pi ** 2, (0, 2 * pi)),
+             ("y=tan(x), y=0, x=pi/4; eje x", pi * (1 - pi / 4), (0, pi / 4)),
+             ("y=tan x, y=0, x=pi/4, eje x", pi * (1 - pi / 4), (0, pi / 4)),
+             ("y=x^2, x=0, y=4, eje y", 8 * pi, (0, 4)),
+             ("y=x^2\nx=0\ny=4\neje y", 8 * pi, (0, 4))]
+    for texto, esperado, (a, b) in casos:
+        v, r = resolver_enunciado(texto)
+        assert abs(v - esperado) < 1e-9, (texto, v, esperado)
+        assert abs(r["a"] - a) < 1e-9 and abs(r["b"] - b) < 1e-9, (texto, r["a"], r["b"])
+
+
+def test_eje_en_el_enunciado():
+    assert extraer_eje("y=x^2, y=0, eje x") == (False, "0")
+    assert extraer_eje("y=x^2, x=0, eje y") == (True, "0")
+    assert extraer_eje("y=x^2, x=1, eje y=2") == (False, "2")
+    assert extraer_eje("y=x^2, y=1, eje x=-1") == (True, "-1")
+    assert extraer_eje("y=x^2, x=0") is None
 
 
 if __name__ == "__main__":

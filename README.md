@@ -14,29 +14,38 @@ python -m streamlit run app.py
 
 ## Cómo usarlo
 
-1. Elige un **ejemplo listo** o escribe tu propia función `y = f(x)`.
-2. Indica el **eje de giro**:
-   - *Horizontal*: el eje x (`y = 0`) u otra recta `y = k`.
-   - *Vertical*: el eje y (`x = 0`) u otra recta `x = k`. El programa **despeja x en función de y** por ti.
-3. Escribe los límites (`a` y `b`; en giro vertical son límites de **y**) y la cantidad de discos `n`.
-4. (Opcional) Escribe una segunda función para que quede un hueco: método de **arandelas**.
+Escribe el enunciado tal como viene en el ejercicio, en el cuadro de la barra lateral, y elige la cantidad de discos `n`.
+Las partes se separan con comas, punto y coma o saltos de línea. Ejemplos:
+
+```
+y=(x-2)^2, x=0, y=0, eje x
+y=x^3-x, y=0, eje x
+y=e^(-x), x=1, y=1, eje y=2
+y=|cos(x)|, y=0, 0<=x<=2pi, eje x
+y=tan(x), y=0, x=pi/4, eje x
+y=x^2, x=0, y=4, eje y
+```
+
+El programa halla solo los puntos de corte y los límites de integración. Si el eje es vertical, despeja x en función de y.
+Si el enunciado no dice el eje, usa el eje x y lo avisa.
 
 | Escribes | Significa |
 |---|---|
+| `y=x^2`, `y=0` | curva o recta horizontal |
+| `x=0`, `x=3`, `0<=x<=2pi` | rectas verticales (límites) |
+| `eje x`, `eje y`, `eje y=2`, `eje x=1` | eje de giro |
 | `x^2` o `x**2` | x al cuadrado |
 | `2x` o `2*x` | 2 por x |
-| `sin(x)`, `cos(x)`, `e^x`, `ln(x)`, `sqrt(x)`, `abs(x)` | funciones comunes (con paréntesis) |
-| `pi`, `e` | constantes (también en los límites: `pi/2`) |
+| `sin(x)`, `cos x`, `e^x`, `ln(x)`, `sqrt(x)`, `abs(x)`, `|x|` | funciones comunes |
+| `pi`, `e` | constantes |
 | `1,5` o `1.5` | decimales |
 
 ## Qué muestra el programa
 
-1. **La idea, sin complicaciones:** qué es un sólido de revolución y por qué se corta en discos (con el sólido en 3D interactivo).
-2. **Plantear el problema:** radios R y r, despeje de x si el eje es vertical, región 2D.
-3. **Solución numérica (la parte principal):** una pestaña por método (discos con radio a la izquierda, derecha y al centro, trapecio y Simpson). Cada una con Δ, fórmula, sustitución, tabla disco por disco, gráfica 3D de los discos y gráfica de la aproximación.
-4. **Valor exacto con la integral:** antiderivada → evaluar en los límites → restar, como se haría a mano, para comprobar la aproximación.
-5. **Comparación:** tabla de errores y gráfica de convergencia (error vs n).
-6. **Glosario** para principiantes.
+1. **Planteamiento:** puntos de corte y límites, despeje de x si el eje es vertical, radios R y r, región 2D y sólido 3D.
+2. **Solución numérica:** una pestaña por método (discos izquierda, derecha y punto medio, trapecio y Simpson), con Δ, fórmula, sustitución, cálculo, tabla disco por disco y gráficas.
+3. **Valor exacto con la integral:** antiderivada, evaluación en los límites y resta.
+4. **Comparación:** tabla de errores y gráfica de convergencia (error vs n).
 
 ## Casos especiales que maneja
 
